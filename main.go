@@ -3,10 +3,12 @@ package main
 import (
 	"encoding/binary"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"strings"
 )
 
 const (
@@ -18,14 +20,22 @@ const (
 	ipv6Addr      = 0x04
 )
 
+var allowedIPs map[string]struct{}
+
 func main() {
-	listener, err := net.Listen("tcp", ":1080")
+	addr := flag.String("addr", ":1080", "address:port to listen on")
+	allowedIPsFlag := flag.String("allowedIPs", "", "comma-separated list of allowed client IPs (all allowed if empty)")
+	flag.Parse()
+
+	allowedIPs = parseAllowedIPs(*allowedIPsFlag)
+
+	listener, err := net.Listen("tcp", *addr)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer listener.Close()
 
-	log.Println("SOCKS5 proxy listening on :1080")
+	log.Printf("SOCKS5 proxy listening on %s", *addr)
 
 	for {
 		conn, err := listener.Accept()
@@ -33,8 +43,39 @@ func main() {
 			log.Printf("accept error: %v", err)
 			continue
 		}
+		if !isAllowedIP(conn.RemoteAddr()) {
+			log.Printf("rejected connection from %s", conn.RemoteAddr())
+			conn.Close()
+			continue
+		}
 		go handleConnection(conn)
 	}
+}
+
+func parseAllowedIPs(s string) map[string]struct{} {
+	if s == "" {
+		return nil
+	}
+	m := make(map[string]struct{})
+	for _, ip := range strings.Split(s, ",") {
+		ip = strings.TrimSpace(ip)
+		if ip != "" {
+			m[ip] = struct{}{}
+		}
+	}
+	return m
+}
+
+func isAllowedIP(addr net.Addr) bool {
+	if allowedIPs == nil {
+		return true
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return false
+	}
+	_, ok := allowedIPs[host]
+	return ok
 }
 
 func handleConnection(conn net.Conn) {
